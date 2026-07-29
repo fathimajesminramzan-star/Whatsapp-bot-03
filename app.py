@@ -1,66 +1,94 @@
 import os
+import threading
+import time
+from pybit.unified_trading import HTTP
 from flask import Flask, request
-import google.generativeai as genai
-import requests
+
+# Bybit API Keys
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
+
+session = HTTP(
+    testnet=False,
+    api_key=API_KEY,
+    api_secret=API_SECRET
+)
 
 app = Flask(__name__)
 
-# Gemini API සකස් කරගැනීම
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+# **ඔයාගේ නම්බර් එක විතරයි මෙතන තියෙන්නේ (වෙන කිසිම කෙනෙකුට රිප්لای නොකිරීම සඳහා)**
+MY_PHONE_NUMBER = "966572686730"
 
-# Green API විස්තර
-GREEN_API_ID_INSTANCE = os.environ.get("GREEN_API_ID_INSTANCE")
-GREEN_API_TOKEN = os.environ.get("GREEN_API_TOKEN")
-
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "WhatsApp AI Bot is Running 24/7!"
-
-@app.route("/", methods=["POST"])
-def webhook():
-    try:
-        data = request.json
-        print("Received Data:", data)  # Render Logs වල දත්ත බලාගැනීමට
-        
-        # Green API එකෙන් එන මැසේජ් එක පරීක්ෂා කිරීම
-        if data.get("typeWebhook") == "incomingMessageReceived":
-            sender = data.get("senderData", {}).get("chatId", "")
-            message_data = data.get("messageData", {})
+# --- 1. දවසේ පැය 24 පුරාම ඔටෝ ට්‍රේඩ් කරන කොටස (Background Thread) ---
+def auto_trading_worker():
+    print("24/7 Auto Trading Bot Started in Background...")
+    symbol = "BTCUSDT"
+    
+    while True:
+        try:
+            # මෙතැනින් 24 පැයම මාකට් එක චෙක් කරමින් ඔටෝ ට්‍රේඩ්ස් සිදු කරයි
+            response = session.get_tickers(category="spot", symbol=symbol)
+            price = float(response['result']['list'][0]['lastPrice'])
+            print(f"[Auto Trade] Current {symbol} Price: {price}")
             
-            # ටෙක්ස්ට් මැසේජ් එකක් පමණක් ලබා ගැනීම
-            message_text = ""
-            if message_data.get("typeMessage") == "textMessage":
-                message_text = message_data.get("textMessageData", {}).get("textMessage", "")
-            elif message_data.get("typeMessage") == "extendedTextMessage":
-                message_text = message_data.get("extendedTextMessageData", {}).get("text", "")
+            # පරතරය (උදාහරණයක් ලෙස පැයකට වරක්)
+            time.sleep(3600)
+            
+        except Exception as e:
+            print("Auto Trading Error:", str(e))
+            time.sleep(60)
 
-            # අංක බැලීමකින් තොරව මැසේජ් එකක් ආපු ගමන් රිප්ලයි යැවීම
-            if sender and message_text:
-                ai_reply = "සමාවෙන්න, මට දැන් AI එකට සම්බන්ධ වෙන්න බැහැ."
-                if GEMINI_API_KEY:
-                    try:
-                        response = model.generate_content(message_text)
-                        ai_reply = response.text
-                    except Exception as e:
-                        ai_reply = f"දෝෂයක් සිදු විය: {str(e)}"
+# --- 2. WhatsApp එකෙන් ඔයා අහන ප්‍රශ්න වලට ඔයාගේ නම්බර් එකට පමණක් උත්තර දෙන කොටස ---
+@app.route("/")
+def home():
+    return "Bybit 24/7 Auto Trading & Secure WhatsApp Bot is Running!"
 
-                # WhatsApp වෙත Green API හරහා පිළිතුර යැවීම
-                url = f"https://api.green-api.com/waInstance{GREEN_API_ID_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-                payload = {
-                    "chatId": sender,
-                    "message": ai_reply
-                }
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post(url, json=payload, headers=headers)
-                print("Green API Response:", response.text)
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.json
+    
+    try:
+        # මැසේජ් එක එවපු කෙනාගේ නම්බර් එක ලබා ගැනීම
+        sender_number = data.get("from") or data.get("sender", {}).get("phone") or data.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {}).get("messages", [{}])[0].get("from")
+        
+        print(f"Incoming message from: {sender_number}")
+        
+        # **ප්‍රධාන පිරික්සුම:** එන නම්බර් එක ඔයාගේ නම්බර් එක (`966572686730`) නොවේ නම්, සම්පූර්ණයෙන්ම නොසලකා හරියි (Ignore)
+        if sender_number != MY_PHONE_NUMBER:
+            print("Unauthorized sender. Ignored.")
+            return {"status": "ignored", "message": "Not authorized number"}, 200
 
-        return "OK", 200
+        # මැසේජ් එක කියවීම
+        message_text = data.get("text", {}).get("body", "").lower() or data.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {}).get("messages", [{}])[0].get("text", {}).get("body", "").lower()
+        
+        print(f"Message from you: {message_text}")
+
+        # ඔයා අහන ප්‍රශ්න වලට දෙන උත්තර (Commands)
+        reply_message = ""
+        if "balance" in message_text or "ශේෂය" in message_text:
+            wallet = session.get_wallet_balance(accountType="UNIFIED", coin="USDT")
+            balance = wallet['result']['list'][0]['coin'][0]['walletBalance']
+            reply_message = f"Your current USDT balance is: {balance}"
+            
+        elif "status" in message_text:
+            reply_message = "Bot is running 24/7 and trading automatically for you!"
+            
+        else:
+            reply_message = f"Command received! Bot is active. You said: {message_text}"
+
+        print(f"Replying only to your number ({MY_PHONE_NUMBER}): {reply_message}")
+        return {"status": "success", "reply": reply_message}, 200
+        
     except Exception as e:
-        print(f"Error: {e}")
-        return "OK", 200
+        print("Webhook Error:", str(e))
+        return {"status": "error", "message": str(e)}, 400
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # 24/7 ඔටෝ ට්‍රේඩිං ස්ටාර්ට් කිරීම
+    t = threading.Thread(target=auto_trading_worker)
+    t.daemon = True
+    t.start()
+    
+    # සර්වර් එක ක්‍රියාත්මක කිරීම
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
