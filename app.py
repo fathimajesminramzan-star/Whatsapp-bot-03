@@ -1,66 +1,54 @@
 import os
-from flask import Flask, request
-import google.generativeai as genai
 import requests
+from flask import Flask, request
 
 app = Flask(__name__)
 
-# Gemini API සකස් කරගැනීම
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+ID_INSTANCE = os.getenv("PHONE_NUMBER_ID", "YOUR_INSTANCE_ID")
+API_TOKEN = os.getenv("WHATSAPP_TOKEN", "YOUR_API_TOKEN")
 
-# Green API විස්තර
-GREEN_API_ID_INSTANCE = os.environ.get("GREEN_API_ID_INSTANCE")
-GREEN_API_TOKEN = os.environ.get("GREEN_API_TOKEN")
-
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "WhatsApp AI Bot is Running 24/7!"
-
-@app.route("/", methods=["POST"])
-def webhook():
+def send_whatsapp_message(chat_id, message_text):
+    """Green API හරහා නිවැරදිව මැසේජ් යැවීම"""
     try:
-        data = request.json
-        print("Received Data:", data)  # Render Logs වල දත්ත බලාගැනීමට
+        # නිවැරදි Green API URL එක
+        url = f"https://7107.api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
         
-        # Green API එකෙන් එන මැසේජ් එක පරීක්ෂා කිරීම
-        if data.get("typeWebhook") == "incomingMessageReceived":
-            sender = data.get("senderData", {}).get("chatId", "")
-            message_data = data.get("messageData", {})
-            
-            # ටෙක්ස්ට් මැසේජ් එකක් පමණක් ලබා ගැනීම
-            message_text = ""
-            if message_data.get("typeMessage") == "textMessage":
-                message_text = message_data.get("textMessageData", {}).get("textMessage", "")
-            elif message_data.get("typeMessage") == "extendedTextMessage":
-                message_text = message_data.get("extendedTextMessageData", {}).get("text", "")
-
-            # අංක බැලීමකින් තොරව මැසේජ් එකක් ආපු ගමන් රිප්ලයි යැවීම
-            if sender and message_text:
-                ai_reply = "සමාවෙන්න, මට දැන් AI එකට සම්බන්ධ වෙන්න බැහැ."
-                if GEMINI_API_KEY:
-                    try:
-                        response = model.generate_content(message_text)
-                        ai_reply = response.text
-                    except Exception as e:
-                        ai_reply = f"දෝෂයක් සිදු විය: {str(e)}"
-
-                # WhatsApp වෙත Green API හරහා පිළිතුර යැවීම
-                url = f"https://api.green-api.com/waInstance{GREEN_API_ID_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-                payload = {
-                    "chatId": sender,
-                    "message": ai_reply
-                }
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post(url, json=payload, headers=headers)
-                print("Green API Response:", response.text)
-
-        return "OK", 200
+        payload = {
+            "chatId": chat_id,
+            "message": message_text
+        }
+        
+        response = requests.post(url, json=payload)
+        print("Send response text:", response.text)
+        return response.json()
     except Exception as e:
-        print(f"Error: {e}")
-        return "OK", 200
+        print(f"Error sending message: {e}")
+        return None
+
+@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    print("Received data:", data)
+    
+    try:
+        if "messageData" in data:
+            msg_data = data["messageData"]
+            if msg_data.get("typeMessage") == "textMessage":
+                msg_body = msg_data.get("textMessageData", {}).get("textMessage", "")
+                
+                sender_data = data.get("senderData", {})
+                chat_id = sender_data.get("chatId", "")
+                
+                print(f"Message from {chat_id}: {msg_body}")
+                
+                send_whatsapp_message(chat_id, f"Bot reply: {msg_body}")
+                
+    except Exception as e:
+        print(f"Error parsing message: {e}")
+        
+    return "OK", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
