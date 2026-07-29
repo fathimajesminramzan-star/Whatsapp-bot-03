@@ -1,66 +1,100 @@
 import os
-from flask import Flask, request
-import google.generativeai as genai
 import requests
+from flask import Flask, request
+from pybit.unified_trading import HTTP
 
 app = Flask(__name__)
 
-# Gemini API සකස් කරගැනීම
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+# Render Environment Variables වලින් API Key සහ Secret ලබා ගැනීම
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
 
-# Green API විස්තර
-GREEN_API_ID_INSTANCE = os.environ.get("GREEN_API_ID_INSTANCE")
-GREEN_API_TOKEN = os.environ.get("GREEN_API_TOKEN")
+# Bybit HTTP session එක සැකසීම (Live trading සඳහා testnet=False)
+session = HTTP(
+    testnet=False,
+    api_key=API_KEY,
+    api_secret=API_SECRET
+)
 
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "WhatsApp AI Bot is Running 24/7!"
+ID_INSTANCE = "710722695539"
+API_TOKEN = "5dcefdf92a5d46b69f4cd24d720a00fa5430a653a7be4d3687"
 
-@app.route("/", methods=["POST"])
-def webhook():
+def send_whatsapp_message(chat_id, message_text):
+    """Green API හරහා WhatsApp මැසේජ් යැවීම"""
     try:
-        data = request.json
-        print("Received Data:", data)  # Render Logs වල දත්ත බලාගැනීමට
-        
-        # Green API එකෙන් එන මැසේජ් එක පරීක්ෂා කිරීම
-        if data.get("typeWebhook") == "incomingMessageReceived":
-            sender = data.get("senderData", {}).get("chatId", "")
-            message_data = data.get("messageData", {})
-            
-            # ටෙක්ස්ට් මැසේජ් එකක් පමණක් ලබා ගැනීම
-            message_text = ""
-            if message_data.get("typeMessage") == "textMessage":
-                message_text = message_data.get("textMessageData", {}).get("textMessage", "")
-            elif message_data.get("typeMessage") == "extendedTextMessage":
-                message_text = message_data.get("extendedTextMessageData", {}).get("text", "")
-
-            # අංක බැලීමකින් තොරව මැසේජ් එකක් ආපු ගමන් රිප්ලයි යැවීම
-            if sender and message_text:
-                ai_reply = "සමාවෙන්න, මට දැන් AI එකට සම්බන්ධ වෙන්න බැහැ."
-                if GEMINI_API_KEY:
-                    try:
-                        response = model.generate_content(message_text)
-                        ai_reply = response.text
-                    except Exception as e:
-                        ai_reply = f"දෝෂයක් සිදු විය: {str(e)}"
-
-                # WhatsApp වෙත Green API හරහා පිළිතුර යැවීම
-                url = f"https://api.green-api.com/waInstance{GREEN_API_ID_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-                payload = {
-                    "chatId": sender,
-                    "message": ai_reply
-                }
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post(url, json=payload, headers=headers)
-                print("Green API Response:", response.text)
-
-        return "OK", 200
+        url = f"https://api.green-api.com/waInstance{ID_INSTANCE}/sendMessage/{API_TOKEN}"
+        payload = {
+            "chatId": chat_id,
+            "message": message_text
+        }
+        response = requests.post(url, json=payload)
+        return response.json()
     except Exception as e:
-        print(f"Error: {e}")
-        return "OK", 200
+        print(f"Error sending message: {e}")
+        return None
+
+def get_bybit_grid_status(symbol="BTCUSDT"):
+    """Bybit API එක හරහා ලයිව් මාකට් ප්‍රයිස් එක ලබාගෙන ග්‍රිඩ් තත්ත්වය පරීක්ෂා කිරීම"""
+    try:
+        response = session.get_tickers(
+            category="spot",
+            symbol=symbol
+        )
+        list_data = response.get("result", {}).get("list", [])
+        if list_data:
+            current_price = float(list_data[0].get("lastPrice"))
+            buy_price = round(current_price * 0.99, 2)
+            sell_price = round(current_price * 1.01, 2)
+            
+            msg = (
+                f"🤖 *Bybit Grid Bot Status* ({symbol}):\n\n"
+                f"📍 Current Market Price: ${current_price}\n"
+                f"🟢 Lower Grid (Buy Zone): ${buy_price}\n"
+                f"🔴 Upper Grid (Sell Zone): ${sell_price}\n"
+                f"✨ Status: Connected to Bybit successfully!"
+            )
+            return msg
+        else:
+            return f"Could not fetch market price for {symbol} from Bybit."
+    except Exception as e:
+        print(f"Bybit API Error: {e}")
+        return f"Bybit Error: {str(e)}"
+
+@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    print("Received data:", data)
+    
+    try:
+        if "messageData" in data:
+            msg_data = data["messageData"]
+            if msg_data.get("typeMessage") == "textMessage":
+                msg_body = msg_data.get("textMessageData", {}).get("textMessage", "").strip().lower()
+                
+                sender_data = data.get("senderData", {})
+                chat_id = sender_data.get("chatId", "")
+                
+                print(f"Message from {chat_id}: {msg_body}")
+                
+                # බොට් යවන මැසේජ් වලට නැවත රිප්ලයි වීම වැළැක්වීම
+                if "bybit grid bot status" in msg_body:
+                    return "OK", 200
+
+                if "grid" in msg_body or "start" in msg_body or "btc" in msg_body:
+                    reply_text = get_bybit_grid_status("BTCUSDT")
+                elif "hi" in msg_body or "hello" in msg_body:
+                    reply_text = "Hello! Send 'grid' to check your Bybit automated trading status."
+                else:
+                    reply_text = f"Received: '{msg_body}'. Send 'grid' to view the Bybit strategy."
+                
+                send_whatsapp_message(chat_id, reply_text)
+                
+    except Exception as e:
+        print(f"Error parsing message: {e}")
+        
+    return "OK", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
