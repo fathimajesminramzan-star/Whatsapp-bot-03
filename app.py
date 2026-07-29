@@ -1,66 +1,90 @@
 import os
-from flask import Flask, request
-import google.generativeai as genai
+import threading
+import time
 import requests
+from pybit.unified_trading import HTTP
+from flask import Flask, request
+
+# Bybit API Keys
+API_KEY = os.getenv("BYBIT_API_KEY")
+API_SECRET = os.getenv("BYBIT_API_SECRET")
+
+session = HTTP(
+    testnet=False,
+    api_key=API_KEY,
+    api_secret=API_SECRET
+)
 
 app = Flask(__name__)
 
-# Gemini API සකස් කරගැනීම
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+MY_PHONE_NUMBER = "966572686730"
 
-# Green API විස්තර
-GREEN_API_ID_INSTANCE = os.environ.get("GREEN_API_ID_INSTANCE")
-GREEN_API_TOKEN = os.environ.get("GREEN_API_TOKEN")
+# WhatsApp Cloud API Configuration
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "YOUR_WHATSAPP_TOKEN")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "YOUR_PHONE_NUMBER_ID")
 
-@app.route("/", methods=["GET", "HEAD"])
-def home():
-    return "WhatsApp AI Bot is Running 24/7!"
-
-@app.route("/", methods=["POST"])
-def webhook():
+def send_whatsapp_message(to_number, message_text):
+    """WhatsApp එකට ආපහු මැසේජ් එකක් යවන ෆන්ෂන් එක"""
     try:
-        data = request.json
-        print("Received Data:", data)  # Render Logs වල දත්ත බලාගැනීමට
-        
-        # Green API එකෙන් එන මැසේජ් එක පරීක්ෂා කිරීම
-        if data.get("typeWebhook") == "incomingMessageReceived":
-            sender = data.get("senderData", {}).get("chatId", "")
-            message_data = data.get("messageData", {})
-            
-            # ටෙක්ස්ට් මැසේජ් එකක් පමණක් ලබා ගැනීම
-            message_text = ""
-            if message_data.get("typeMessage") == "textMessage":
-                message_text = message_data.get("textMessageData", {}).get("textMessage", "")
-            elif message_data.get("typeMessage") == "extendedTextMessage":
-                message_text = message_data.get("extendedTextMessageData", {}).get("text", "")
-
-            # අංක බැලීමකින් තොරව මැසේජ් එකක් ආපු ගමන් රිප්ලයි යැවීම
-            if sender and message_text:
-                ai_reply = "සමාවෙන්න, මට දැන් AI එකට සම්බන්ධ වෙන්න බැහැ."
-                if GEMINI_API_KEY:
-                    try:
-                        response = model.generate_content(message_text)
-                        ai_reply = response.text
-                    except Exception as e:
-                        ai_reply = f"දෝෂයක් සිදු විය: {str(e)}"
-
-                # WhatsApp වෙත Green API හරහා පිළිතුර යැවීම
-                url = f"https://api.green-api.com/waInstance{GREEN_API_ID_INSTANCE}/sendMessage/{GREEN_API_TOKEN}"
-                payload = {
-                    "chatId": sender,
-                    "message": ai_reply
-                }
-                headers = {'Content-Type': 'application/json'}
-                response = requests.post(url, json=payload, headers=headers)
-                print("Green API Response:", response.text)
-
-        return "OK", 200
+        url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
+        headers = {
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "text",
+            "text": {"body": message_text}
+        }
+        response = requests.post(url, json=payload, headers=headers)
+        return response.json()
     except Exception as e:
-        print(f"Error: {e}")
-        return "OK", 200
+        print(f"Error sending message: {e}")
+        return None
+
+# Meta Webhook Verification (GET Method)
+@app.route('/webhook', methods=['GET'])
+def verify_webhook():
+    verify_token = "my_verify_token_123"
+    
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    
+    if mode and token:
+        if mode == "subscribe" and token == verify_token:
+            return challenge, 200
+        else:
+            return "Verification failed", 403
+    return "Hello World", 200
+
+# WhatsApp Incoming Messages (POST Method)
+@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
+    print("Received data:", data)
+    
+    try:
+        if "messageData" in data:
+            msg_data = data["messageData"]
+            if msg_data.get("typeMessage") == "textMessage":
+                msg_body = msg_data.get("textMessageData", {}).get("textMessage", "")
+                
+                sender_data = data.get("senderData", {})
+                chat_id = sender_data.get("chatId", "")
+                
+                from_number = chat_id.split("@")[0] if "@" in chat_id else chat_id
+                
+                print(f"Message from {from_number}: {msg_body}")
+                send_whatsapp_message(from_number, f"Bot reply: {msg_body}")
+                
+    except Exception as e:
+        print(f"Error parsing message: {e}")
+        
+    return "OK", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
